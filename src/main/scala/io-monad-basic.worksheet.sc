@@ -3,6 +3,7 @@ import scala.util.*
 
 
 //introduce ref transparency and composability
+// Basic stuff, real effect systems have 20+ branches
 enum IO[+T] {
   case Pure(t: T)
   case Effect(t: () => T)
@@ -13,6 +14,8 @@ enum IO[+T] {
     FlatMap[T, Y](this, t => Effect(() => mapper(t)))
 
   def flatMap[Y](mapper: T => IO[Y]) = FlatMap[T, Y](this, mapper)
+
+  def zip[Y](other: IO[Y]): IO[(T, Y)]  = this.flatMap(x => other.map(y => (x, y)))
 }
 
 object IO {
@@ -20,6 +23,10 @@ object IO {
   def pure[T](t: T) = Pure(t)
 
   def effect[T](t: => T) = Effect(() => t)
+
+  def suspend[T](t: => IO[T]) = Effect(() => t).flatMap(identity)
+
+  def apply[T](t: => T) = effect(t)
 }
 
 def printLn(statement: String) = IO.pure(println(statement))
@@ -37,31 +44,6 @@ final def eval[T](io: IO[T]): Try[T] = io match
   case IO.Effect(t)             => Try(t())
   case IO.FlatMap(io, mapper) => eval(io).flatMap(e => eval(mapper(e)))
 
-
-// final def evalRec[T](io: IO[T]): Try[T] = {
-//   @tailrec
-//   def loop(stack: List[IO[Any]], result: Try[Any]): Try[Any] = stack match {
-//     case Nil => result
-//     case IO.Pure(t) :: tail => loop(tail, result.flatMap(_ => Try(t())))
-//     case IO.FlatMap(mapper, io) :: tail => loop(mapper.asInstanceOf[Any => IO[Any]](result.get) :: io :: tail, result)
-//   }
-
-//   loop(List(io), Try(io)).asInstanceOf[Try[T]]
-// }
-
-//can try this if I call it pure and Effect/Apply. 
-
-@tailrec
-final def evalRec[B](in: IO[B]): B = in match {
-  case IO.Pure(a) => a
-  case IO.Effect(r) => evalRec(IO.Pure(r()))
-  case IO.FlatMap(x, f) => x match {
-    case IO.Pure(a) => evalRec(f(a))
-    case IO.Effect(r) => evalRec(IO.FlatMap(IO.Pure(r()), f))
-    case IO.FlatMap(y, g) => evalRec(y.flatMap(g(_) flatMap f))
-  }
-}
-
 @tailrec
 final def evalRecSafe[B](in: IO[B]): Try[B] = in match {
   case IO.Pure(a) => Try(a)
@@ -74,7 +56,6 @@ final def evalRecSafe[B](in: IO[B]): Try[B] = in match {
     case IO.FlatMap(y, g) => evalRecSafe(y.flatMap(g(_) flatMap f))
   }
 }
-
 
 
 val complexStuff = IO
@@ -92,9 +73,11 @@ def repeat[T](io: IO[T], times: Int): IO[T] =
 
 def fact(num: Long): IO[Long] =  { 
   // recursive factorial using effects
-  if num == 0 then IO.pure(1L) else IO.effect(fact(num - 1).map(_ * num)).flatMap(identity)
+  if num == 0 then IO.pure(1L) else IO.suspend(fact(num - 1)).map(_ * num)
 }  
-val repated10x = repeat(complexStuff, 10)
+
+//Add another 0 to the number of repetitions
+val repated10x = repeat(complexStuff, 10000)
 
 eval(repated10x)
 
@@ -103,9 +86,30 @@ val repatedManyx = repeat(complexStuff, 10000)
 
 //fix the stack overflow issue
 
-//Add another 0 to the number of repetitions
-evalRec(repatedManyx)
+evalRecSafe(repatedManyx)
 
 val fact10 = fact(5)
 
 evalRecSafe(fact10)
+
+def blowup(num: Int) = IO.pure(num).map{x => 
+  if(x % 2 == 0) {x / 2 } else {throw new Exception("Not divisible by 2!")} }
+
+
+//error handling 
+evalRecSafe(blowup(10))
+evalRecSafe(blowup(11))
+
+// can we manually fail the IO?
+
+//use apply and zip 
+evalRecSafe((IO("hi").zip(IO("there"))).map{case (a, b) => s"$a $b"})
+
+// could now talk about adding an explicit failure operation and a recover option as well. Explain that its of course throwable based because of anticipating unknown errors.
+// Alternative is to use either everywhere and encapsulate the error in the IO parameter itself
+// ZIO is an alternative that does this.
+
+// Effect systems are very invasive and take time to get used to. They are not always necessary but can be very useful in certain situations. 
+//The best thing to do without effects systems is to use the Try monad and the Either monad and try to push the effects to the boundaries of the system (via dependency injection)
+
+
